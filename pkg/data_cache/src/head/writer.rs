@@ -335,6 +335,22 @@ impl ExecutorClient {
             .map_err(|e| DataFusionError::Execution(format!("Error calling do_put: {}", e)))?;
         Ok(Box::pin(EmptyRecordBatchStream::new(schema)))
     }
+
+        /// Push data rows to a worker. The start row travels in a gRPC header.
+    pub async fn send_data(&mut self, batch: RecordBatch, start_index: u64) -> Result<()> {
+        self.flight_client
+            .add_header("x-start-index", &start_index.to_string())
+            .map_err(|e| DataFusionError::Execution(format!("Failed to set header: {e:?}")))?;
+        let stream = FlightDataEncoderBuilder::new().build(futures::stream::iter(vec![Ok(batch)]));
+        self.flight_client
+            .do_put(stream)
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("Error sending data: {e:?}")))?
+            .try_collect::<Vec<_>>()
+            .await
+            .map_err(|e| DataFusionError::Execution(format!("Error calling do_put: {e}")))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

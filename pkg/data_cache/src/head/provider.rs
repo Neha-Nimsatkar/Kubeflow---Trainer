@@ -327,6 +327,13 @@ impl RecordBatchBuilder {
         self.worker_ids.push(index as u64);
     }
 
+        fn add_range_task(&mut self, index: usize, start: u64, end: u64) {
+        self.file_paths.push(Vec::new());
+        self.row_start_indexes.push(start);
+        self.row_end_indexes.push(end);
+        self.worker_ids.push(index as u64);
+    }
+
     fn build(self) -> Result<RecordBatch> {
         let worker_ids: ArrayRef = Arc::new(UInt64Array::from(self.worker_ids));
         let row_start_indexes: ArrayRef = Arc::new(UInt64Array::from(self.row_start_indexes));
@@ -369,6 +376,15 @@ impl RecordBatchBuilder {
 pub(crate) fn empty_assignment(worker_id: u64, start_index: u64) -> Result<RecordBatch> {
     let mut builder = RecordBatchBuilder::new();
     builder.add_empty_task(worker_id as usize, start_index);
+    builder.build()
+}
+
+/// Layout table for pushed data: (worker_id, start_row, end_row) per worker.
+pub(crate) fn range_assignments(ranges: &[(u64, u64, u64)]) -> Result<RecordBatch> {
+    let mut builder = RecordBatchBuilder::new();
+    for (worker_id, start, end) in ranges {
+        builder.add_range_task(*worker_id as usize, *start, *end);
+    }
     builder.build()
 }
 

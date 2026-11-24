@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use crate::config::config::CacheConfig;
-use crate::head::provider::{DataFileTableProvider, empty_assignment};
+use crate::head::provider::{DataFileTableProvider, empty_assignment, range_assignments};
 use crate::head::writer::{DistributedWriterExec, ExecutorClient};
 use arrow::array::UInt64Array;
 use arrow_schema::SchemaRef;
@@ -28,6 +28,9 @@ use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tracing::{error, info};
+use std::sync::atomic::{AtomicU64, Ordering};
+use arrow::compute::concat_batches;
+use arrow::record_batch::RecordBatch;
 
 pub struct Distributor {
     ctx: Arc<SessionContext>,
@@ -36,7 +39,7 @@ pub struct Distributor {
     mem_table_name: String,
     worker_map: Arc<HashMap<String, String>>,
     arrow_schema: SchemaRef,
-    pub(crate) total_row_count: u64,
+    pub(crate) total_row_count: AtomicU64,
     config: Arc<CacheConfig>,
 }
 
@@ -57,7 +60,7 @@ impl Distributor {
             mem_table_name,
             worker_map,
             arrow_schema,
-            total_row_count: 0,
+            total_row_count: AtomicU64::new(0),
             config,
         }
     }
@@ -90,8 +93,8 @@ impl Distributor {
                     DataFusionError::Execution("Failed to downcast to UInt64Array".to_string())
                 })?
                 .value(0);
-            self.total_row_count = max_value + 1;
-            info!("Total num of rows: {}", self.total_row_count);
+            self.total_row_count.store(max_value + 1, Ordering::SeqCst);
+            info!("Total num of rows: {}", self.total_row_count.load(Ordering::SeqCst));
         }
 
         self.distribute_data_files().await?;
@@ -127,6 +130,40 @@ impl Distributor {
         Ok(string_results)
     }
 
+        /// Accepts pushed rows: splits them across workers, sends each its chunk,
+    /// then registers the layout table so training pods can find the data.
+    pub async fn ingest(&self, batches: Vec<RecordBatch>) -> Result<()> {
+        let schema = batches
+            .first()
+            .ok_or_else(|| DataFusionError::Execution("no batches pushed".to_string()))?
+            .schema();
+        let all = concat_batches(&schema, &batches)?;
+        let total = all.num_rows() as u64;
+        if total == 0 {
+            return Err(DataFusionError::Execution("pushed data has no rows".to_string()));
+        }
+
+        let mut layout: Vec<(u64, u64, u64)> = Vec::new();
+        for (worker_id, range) in split_ranges(total, self.num_workers).into_iter().enumerate() {
+            let Some((start, end)) = range else { continue };
+            let slice = all.slice(start as usize, (end - start + 1) as usize);
+            let addr = self.worker_map.get(&worker_id.to_string()).ok_or_else(|| {
+                DataFusionError::Execution(format!("Worker {} not found in worker map", worker_id))
+            })?;
+            let mut client = ExecutorClient::try_new(addr, self.config.connect_timeout).await?;
+            client.send_data(slice, start).await?;
+            layout.push((worker_id as u64, start, end));
+        }
+
+        let layout_batch = range_assignments(&layout)?;
+        let table = MemTable::try_new(layout_batch.schema(), vec![vec![layout_batch]])?;
+        self.ctx
+            .register_table(self.mem_table_name.clone(), Arc::new(table))?;
+        self.total_row_count.store(total, Ordering::SeqCst);
+        info!("Ingested {} rows across {} workers", total, layout.len());
+        Ok(())
+    }
+    
     async fn load_data_file_locs(&self) -> Result<()> {
         let memtable = MemTable::load(
             self.data_file_provider.clone(),
@@ -213,10 +250,47 @@ impl Distributor {
             let addr = self.worker_map.get(&worker_id.to_string()).ok_or_else(|| {
                 DataFusionError::Execution(format!("Worker {} not found in worker map", worker_id))
             })?;
-            let batch = empty_assignment(worker_id, self.total_row_count)?;
+            let batch = empty_assignment(worker_id, self.total_row_count.load(Ordering::SeqCst))?;
             let mut client = ExecutorClient::try_new(addr, self.config.connect_timeout).await?;
             client.send_batch(batch.schema(), vec![Ok(batch)]).await?;
         }
         Ok(())
+    }
+}
+
+/// Splits `total` rows into one consecutive range per worker (inclusive ends).
+/// Same rule as `get_partition_range`. Workers beyond the data get `None`.
+pub(crate) fn split_ranges(total: u64, num_workers: usize) -> Vec<Option<(u64, u64)>> {
+    let per = total.div_ceil(num_workers as u64);
+    (0..num_workers as u64)
+        .map(|w| {
+            let start = w * per;
+            if per == 0 || start >= total {
+                None
+            } else {
+                Some((start, (start + per).min(total) - 1))
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod ingest_tests {
+    use super::split_ranges;
+
+    #[test]
+    fn splits_rows_into_consecutive_ranges() {
+        assert_eq!(
+            split_ranges(10, 3),
+            vec![Some((0, 3)), Some((4, 7)), Some((8, 9))]
+        );
+    }
+
+    #[test]
+    fn workers_without_rows_get_none() {
+        assert_eq!(
+            split_ranges(2, 4),
+            vec![Some((0, 0)), Some((1, 1)), None, None]
+        );
     }
 }

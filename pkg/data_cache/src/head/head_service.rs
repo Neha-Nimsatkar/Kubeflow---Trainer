@@ -24,12 +24,15 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use bincode::config;
 use bytes::Bytes;
 use datafusion::prelude::SessionContext;
-use futures::Stream;
+use futures::{Stream, StreamExt, TryStreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::error;
+use std::sync::atomic::Ordering;
+use arrow::record_batch::RecordBatch;
+use arrow_flight::decode::FlightRecordBatchStream;
 
 /// Head node service implementing Apache Arrow Flight protocol for distributed query coordination.
 ///
@@ -181,7 +184,7 @@ impl FlightService for HeadService {
             .map_err(|_| Status::invalid_argument("Invalid local_rank value"))?;
 
         let (pair, workers) = if let Some((start, end)) = get_partition_range(
-            self.distributor.total_row_count as usize,
+            self.distributor.total_row_count.load(Ordering::SeqCst) as usize,
             total_parsed,
             local_rank_parsed,
         ) {
@@ -251,7 +254,22 @@ impl FlightService for HeadService {
         &self,
         _request: Request<Streaming<FlightData>>,
     ) -> Result<Response<Self::DoPutStream>, Status> {
-        todo!()
+        let batches: Vec<RecordBatch> = FlightRecordBatchStream::new_from_flight_data(
+        _request.into_inner().map_err(|e| e.into()),
+        )
+        .try_collect()
+        .await
+        .map_err(|e| Status::internal(format!("Flight data error: {}", e)))?;
+
+        self.distributor
+            .ingest(batches)
+            .await
+            .map_err(|e| Status::internal(format!("ingest failed: {}", e)))?;
+
+        let stream = futures::stream::iter([Ok(PutResult {
+            app_metadata: Bytes::new(),
+        })]);
+        Ok(Response::new(stream.boxed()))
     }
 
     type DoExchangeStream =
