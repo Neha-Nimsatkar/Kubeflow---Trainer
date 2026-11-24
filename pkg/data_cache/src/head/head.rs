@@ -157,6 +157,9 @@ impl Distributor {
 
         let layout_batch = range_assignments(&layout)?;
         let table = MemTable::try_new(layout_batch.schema(), vec![vec![layout_batch]])?;
+
+        // Replace the layout table that was built from Iceberg at startup.
+        let _ = self.ctx.deregister_table(self.mem_table_name.as_str());
         self.ctx
             .register_table(self.mem_table_name.clone(), Arc::new(table))?;
         self.total_row_count.store(total, Ordering::SeqCst);

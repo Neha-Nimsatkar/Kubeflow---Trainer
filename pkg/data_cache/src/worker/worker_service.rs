@@ -286,6 +286,9 @@ impl FlightService for WorkerService {
             let start = header_start_index.unwrap_or(0);
             let table = IndexableMemTable::from_batches(batches, start)
                 .map_err(|e| Status::internal(format!("Failed to build table: {}", e)))?;
+                
+            // Replace any table loaded earlier (for example from Iceberg).
+            let _ = self.ctx.deregister_table("memtable");
             self.ctx
                 .register_table("memtable", Arc::new(table))
                 .map_err(|e| Status::internal(format!("Failed to register table: {}", e)))?;
