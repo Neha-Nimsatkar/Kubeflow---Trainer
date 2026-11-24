@@ -26,6 +26,9 @@ use futures::{StreamExt, TryStreamExt};
 use std::any::Any;
 use std::sync::Arc;
 use tracing::{error, info};
+use crate::config::config::CACHE_INDEX_COLUMN;
+use arrow::array::{ArrayRef, UInt64Array};
+use arrow_schema::{DataType, Field, Schema};
 
 #[derive(Debug)]
 pub struct IndexableMemTable {
@@ -93,6 +96,43 @@ impl IndexableMemTable {
         info!("Number of batches: {}", data.len());
 
         IndexableMemTable::try_new(Arc::clone(&schema), vec![data], start_indices, end_indices)
+    }
+}
+
+impl IndexableMemTable {
+    /// Build a table from pushed batches. Adds a `cache_index` column that
+    /// numbers the rows globally, starting at `start_index`.
+    pub fn from_batches(
+        batches: Vec<RecordBatch>,
+        start_index: u64,
+    ) -> datafusion::common::Result<Self> {
+        let first = batches
+            .first()
+            .ok_or_else(|| DataFusionError::Execution("no batches to load".to_string()))?;
+
+        let mut fields: Vec<Arc<Field>> = first.schema().fields().iter().cloned().collect();
+        fields.push(Arc::new(Field::new(CACHE_INDEX_COLUMN, DataType::UInt64, false)));
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut data = Vec::with_capacity(batches.len());
+        let mut start_indices = Vec::with_capacity(batches.len());
+        let mut end_indices = Vec::with_capacity(batches.len());
+        let mut next = start_index;
+
+        for batch in batches {
+            let n = batch.num_rows() as u64;
+            if n == 0 {
+                continue;
+            }
+            let index: ArrayRef = Arc::new(UInt64Array::from_iter_values(next..next + n));
+            let mut columns = batch.columns().to_vec();
+            columns.push(index);
+            data.push(RecordBatch::try_new(schema.clone(), columns)?);
+            start_indices.push(next);
+            end_indices.push(next + n - 1);
+            next += n;
+        }
+        IndexableMemTable::try_new(schema, vec![data], start_indices, end_indices)
     }
 }
 
@@ -404,6 +444,35 @@ mod tests {
         let result = fetch_partitions(batches, &[0, 4], &[3, 7], 2, 5).await;
 
         assert_eq!(result.len(), 2, "Expected both batches for boundary query");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_from_batches_adds_cache_index() -> Result<(), Box<dyn std::error::Error>> {
+        let batches = create_test_batches()?;
+
+        let table = IndexableMemTable::from_batches(batches, 100)?;
+
+        assert_eq!(table.start_indices, vec![100, 104]);
+        assert_eq!(table.end_indices, vec![103, 107]);
+
+        let result = fetch_partitions(
+            table.batches.clone(),
+            &table.start_indices,
+            &table.end_indices,
+            104,
+            105,
+        )
+        .await;
+        assert_eq!(result.len(), 1);
+        let cache_index = result[0]
+            .column_by_name("cache_index")
+            .expect("cache_index column");
+        let cache_index = cache_index
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .expect("UInt64 cache_index");
+        assert_eq!(cache_index.values().to_vec(), vec![104, 105, 106, 107]);
         Ok(())
     }
 }
