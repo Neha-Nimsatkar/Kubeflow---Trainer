@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
+use iceberg::io::S3_PATH_STYLE_ACCESS;
 
 /// Cache index column name used across the data cache system
 pub const CACHE_INDEX_COLUMN: &str = "cache_index";
@@ -84,5 +85,39 @@ impl CacheConfig {
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.connect_timeout = timeout;
         self
+    }
+}
+
+/// Storage properties for Iceberg file access. Path-style addressing
+/// (`endpoint/bucket/key`) is needed for SeaweedFS and MinIO. The default
+/// stays virtual-hosted style, so AWS users are not affected.
+pub fn s3_props(path_style: Option<String>) -> Vec<(String, String)> {
+    let mut props = Vec::new();
+    if let Some(v) = path_style {
+        props.push((S3_PATH_STYLE_ACCESS.to_string(), v));
+    }
+    props
+}
+
+/// Reads `S3_PATH_STYLE_ACCESS` (for example `true`) from the environment.
+pub fn s3_props_from_env() -> Vec<(String, String)> {
+    s3_props(env::var("S3_PATH_STYLE_ACCESS").ok())
+}
+
+#[cfg(test)]
+mod s3_props_tests {
+    use super::s3_props;
+
+    #[test]
+    fn no_props_by_default() {
+        assert!(s3_props(None).is_empty());
+    }
+
+    #[test]
+    fn path_style_is_passed_through() {
+        assert_eq!(
+            s3_props(Some("true".to_string())),
+            vec![("s3.path-style-access".to_string(), "true".to_string())]
+        );
     }
 }

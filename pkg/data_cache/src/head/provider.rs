@@ -92,7 +92,9 @@ impl DataFileTableProvider {
         arrow_schema: SchemaRef,
         num_workers: usize,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let file_io = FileIOBuilder::new(Arc::new(OpenDalResolvingStorageFactory::new())).build();
+        let file_io = FileIOBuilder::new(Arc::new(OpenDalResolvingStorageFactory::new()))
+            .with_props(crate::config::config::s3_props_from_env())
+            .build();
         let table_indent = TableIdent::from_strs([schema_name, table_name])
             .map_err(|e| format!("Failed to create table ident: {}", e))?;
         let static_table = StaticTable::from_metadata_file(metadata_loc, table_indent, file_io)

@@ -108,7 +108,9 @@ impl WorkerDataSource {
         file_urls: Vec<String>,
         start_index: u64,
     ) -> Result<Self, Box<dyn std::error::Error>> {
-        let file_io = FileIOBuilder::new(Arc::new(OpenDalResolvingStorageFactory::new())).build();
+        let file_io = FileIOBuilder::new(Arc::new(OpenDalResolvingStorageFactory::new()))
+            .with_props(crate::config::config::s3_props_from_env())
+            .build();
         let table_indent = TableIdent::from_strs([schema_name, table_name])
             .map_err(|e| format!("Failed to create table ident: {}", e))?;
         let static_table =
