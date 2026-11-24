@@ -34,6 +34,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::info;
+use crate::worker::indexable_mem_table::IndexableMemTable;
+use arrow::array::RecordBatch;
 
 /// Worker node service implementing Apache Arrow Flight protocol for distributed caching.
 ///
@@ -261,13 +263,40 @@ impl FlightService for WorkerService {
         &self,
         request: Request<Streaming<FlightData>>,
     ) -> Result<Response<Self::DoPutStream>, Status> {
-        let record_batch = FlightRecordBatchStream::new_from_flight_data(
+        // For pushed data, the head sends the global start row in a gRPC header.
+        let header_start_index: Option<u64> = request
+            .metadata()
+            .get("x-start-index")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.parse().ok());
+
+        let mut batches: Vec<RecordBatch> = FlightRecordBatchStream::new_from_flight_data(
             request.into_inner().map_err(|e| e.into()),
         )
-        .try_next()
+        .try_collect()
         .await
-        .map_err(|e| Status::internal(format!("Flight data error: {}", e)))?
-        .ok_or_else(|| Status::internal("No record batch received"))?;
+        .map_err(|e| Status::internal(format!("Flight data error: {}", e)))?;
+
+        if batches.is_empty() {
+            return Err(Status::internal("No record batch received"));
+        }
+
+        // Data push: there is no file_paths column, so the batches ARE the data.
+        if batches[0].column_by_name("file_paths").is_none() {
+            let start = header_start_index.unwrap_or(0);
+            let table = IndexableMemTable::from_batches(batches, start)
+                .map_err(|e| Status::internal(format!("Failed to build table: {}", e)))?;
+            self.ctx
+                .register_table("memtable", Arc::new(table))
+                .map_err(|e| Status::internal(format!("Failed to register table: {}", e)))?;
+            info!("loaded pushed data into memtable starting at row {}", start);
+            let stream = futures::stream::iter([Ok(PutResult {
+                app_metadata: Bytes::new(),
+            })]);
+            return Ok(Response::new(stream.boxed()));
+        }
+
+        let record_batch = batches.swap_remove(0);
         let file_paths_column = record_batch
             .column_by_name("file_paths")
             .ok_or_else(|| Status::internal("file_paths column not found"))?;
