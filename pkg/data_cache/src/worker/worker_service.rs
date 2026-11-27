@@ -14,7 +14,9 @@
 
 use crate::config::config::{CACHE_INDEX_COLUMN, DatasetConfig, IndexPair};
 use crate::health::{HealthState, start_health_server, worker_router};
+use crate::worker::indexable_mem_table::IndexableMemTable;
 use crate::worker::worker::DataLoader;
+use arrow::array::RecordBatch;
 use arrow::array::{ListArray, StringViewArray, UInt64Array};
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -34,8 +36,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::info;
-use crate::worker::indexable_mem_table::IndexableMemTable;
-use arrow::array::RecordBatch;
 
 /// Worker node service implementing Apache Arrow Flight protocol for distributed caching.
 ///
@@ -286,7 +286,7 @@ impl FlightService for WorkerService {
             let start = header_start_index.unwrap_or(0);
             let table = IndexableMemTable::from_batches(batches, start)
                 .map_err(|e| Status::internal(format!("Failed to build table: {}", e)))?;
-                
+
             // Replace any table loaded earlier (for example from Iceberg).
             let _ = self.ctx.deregister_table("memtable");
             self.ctx

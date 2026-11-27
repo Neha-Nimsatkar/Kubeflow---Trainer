@@ -12,8 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::config::config::CACHE_INDEX_COLUMN;
 use arrow::array::RecordBatch;
+use arrow::array::{ArrayRef, UInt64Array};
 use arrow_schema::SchemaRef;
+use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use datafusion::catalog::{Session, TableProvider};
 use datafusion::common::{Constraints, DataFusionError, ScalarValue, exec_err, plan_err};
@@ -26,9 +29,6 @@ use futures::{StreamExt, TryStreamExt};
 use std::any::Any;
 use std::sync::Arc;
 use tracing::{error, info};
-use crate::config::config::CACHE_INDEX_COLUMN;
-use arrow::array::{ArrayRef, UInt64Array};
-use arrow_schema::{DataType, Field, Schema};
 
 #[derive(Debug)]
 pub struct IndexableMemTable {
@@ -111,7 +111,11 @@ impl IndexableMemTable {
             .ok_or_else(|| DataFusionError::Execution("no batches to load".to_string()))?;
 
         let mut fields: Vec<Arc<Field>> = first.schema().fields().iter().cloned().collect();
-        fields.push(Arc::new(Field::new(CACHE_INDEX_COLUMN, DataType::UInt64, false)));
+        fields.push(Arc::new(Field::new(
+            CACHE_INDEX_COLUMN,
+            DataType::UInt64,
+            false,
+        )));
         let schema = Arc::new(Schema::new(fields));
 
         let mut data = Vec::with_capacity(batches.len());

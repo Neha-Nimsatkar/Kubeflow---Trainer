@@ -14,6 +14,8 @@
 
 use crate::head::head::Distributor;
 use crate::head::provider::DataFileTableProvider;
+use arrow::record_batch::RecordBatch;
+use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::{
     Action, Criteria, Empty, FlightData, FlightDescriptor, FlightEndpoint, FlightInfo,
@@ -28,11 +30,9 @@ use futures::{Stream, StreamExt, TryStreamExt};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::error;
-use std::sync::atomic::Ordering;
-use arrow::record_batch::RecordBatch;
-use arrow_flight::decode::FlightRecordBatchStream;
 
 /// Head node service implementing Apache Arrow Flight protocol for distributed query coordination.
 ///
@@ -255,7 +255,7 @@ impl FlightService for HeadService {
         _request: Request<Streaming<FlightData>>,
     ) -> Result<Response<Self::DoPutStream>, Status> {
         let batches: Vec<RecordBatch> = FlightRecordBatchStream::new_from_flight_data(
-        _request.into_inner().map_err(|e| e.into()),
+            _request.into_inner().map_err(|e| e.into()),
         )
         .try_collect()
         .await

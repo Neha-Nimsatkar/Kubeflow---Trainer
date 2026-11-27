@@ -329,7 +329,7 @@ impl RecordBatchBuilder {
         self.worker_ids.push(index as u64);
     }
 
-        fn add_range_task(&mut self, index: usize, start: u64, end: u64) {
+    fn add_range_task(&mut self, index: usize, start: u64, end: u64) {
         self.file_paths.push(Vec::new());
         self.row_start_indexes.push(start);
         self.row_end_indexes.push(end);

@@ -13,11 +13,11 @@
 // limitations under the License.
 
 use bincode::{Decode, Encode};
+use iceberg::io::S3_PATH_STYLE_ACCESS;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
 use std::time::Duration;
-use iceberg::io::S3_PATH_STYLE_ACCESS;
 
 /// Cache index column name used across the data cache system
 pub const CACHE_INDEX_COLUMN: &str = "cache_index";

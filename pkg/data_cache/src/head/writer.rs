@@ -336,7 +336,7 @@ impl ExecutorClient {
         Ok(Box::pin(EmptyRecordBatchStream::new(schema)))
     }
 
-        /// Push data rows to a worker. The start row travels in a gRPC header.
+    /// Push data rows to a worker. The start row travels in a gRPC header.
     pub async fn send_data(&mut self, batch: RecordBatch, start_index: u64) -> Result<()> {
         self.flight_client
             .add_header("x-start-index", &start_index.to_string())

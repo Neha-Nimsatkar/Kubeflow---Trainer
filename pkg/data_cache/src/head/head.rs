@@ -16,6 +16,8 @@ use crate::config::config::CacheConfig;
 use crate::head::provider::{DataFileTableProvider, empty_assignment, range_assignments};
 use crate::head::writer::{DistributedWriterExec, ExecutorClient};
 use arrow::array::UInt64Array;
+use arrow::compute::concat_batches;
+use arrow::record_batch::RecordBatch;
 use arrow_schema::SchemaRef;
 use datafusion::datasource::MemTable;
 use datafusion::error::{DataFusionError, Result};
@@ -27,10 +29,8 @@ use datafusion::sql::TableReference;
 use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use tracing::{error, info};
 use std::sync::atomic::{AtomicU64, Ordering};
-use arrow::compute::concat_batches;
-use arrow::record_batch::RecordBatch;
+use tracing::{error, info};
 
 pub struct Distributor {
     ctx: Arc<SessionContext>,
@@ -94,7 +94,10 @@ impl Distributor {
                 })?
                 .value(0);
             self.total_row_count.store(max_value + 1, Ordering::SeqCst);
-            info!("Total num of rows: {}", self.total_row_count.load(Ordering::SeqCst));
+            info!(
+                "Total num of rows: {}",
+                self.total_row_count.load(Ordering::SeqCst)
+            );
         }
 
         self.distribute_data_files().await?;
@@ -130,7 +133,7 @@ impl Distributor {
         Ok(string_results)
     }
 
-        /// Accepts pushed rows: splits them across workers, sends each its chunk,
+    /// Accepts pushed rows: splits them across workers, sends each its chunk,
     /// then registers the layout table so training pods can find the data.
     pub async fn ingest(&self, batches: Vec<RecordBatch>) -> Result<()> {
         let schema = batches
@@ -140,11 +143,16 @@ impl Distributor {
         let all = concat_batches(&schema, &batches)?;
         let total = all.num_rows() as u64;
         if total == 0 {
-            return Err(DataFusionError::Execution("pushed data has no rows".to_string()));
+            return Err(DataFusionError::Execution(
+                "pushed data has no rows".to_string(),
+            ));
         }
 
         let mut layout: Vec<(u64, u64, u64)> = Vec::new();
-        for (worker_id, range) in split_ranges(total, self.num_workers).into_iter().enumerate() {
+        for (worker_id, range) in split_ranges(total, self.num_workers)
+            .into_iter()
+            .enumerate()
+        {
             let Some((start, end)) = range else { continue };
             let slice = all.slice(start as usize, (end - start + 1) as usize);
             let addr = self.worker_map.get(&worker_id.to_string()).ok_or_else(|| {
@@ -166,7 +174,7 @@ impl Distributor {
         info!("Ingested {} rows across {} workers", total, layout.len());
         Ok(())
     }
-    
+
     async fn load_data_file_locs(&self) -> Result<()> {
         let memtable = MemTable::load(
             self.data_file_provider.clone(),
