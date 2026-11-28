@@ -83,9 +83,9 @@ class CacheInitializer(utils.DatasetProvider):
         cluster_size = int(self.config.cluster_size)
         iam_role = self.config.iam_role
         head_cpu = self.config.head_cpu
-        head_mem = head_mem = "256Mi"
+        head_mem = self.config.head_mem
         worker_cpu = self.config.worker_cpu
-        worker_mem = "256Mi"
+        worker_mem = self.config.worker_mem
         readiness_initial_delay = int(self.config.readiness_initial_delay_seconds)
         readiness_period = int(self.config.readiness_period_seconds)
         readiness_timeout = int(self.config.readiness_timeout_seconds)
